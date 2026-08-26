@@ -2,12 +2,10 @@
   "name": "@deepseek-ai/dsh-web-app-r",
   "description": "Remote-service variant of the DeepSeek Harness browser-surface bundle",
   "version": "0.1.1-rc.2",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REPLACE_OWNER/deepseek-harness-web-app-r.git"
+    "url": "git+https://github.com/doztry/deepseek-harness-web-app-r.git"
   },
   "type": "module",
   "main": "lib/index.js",
