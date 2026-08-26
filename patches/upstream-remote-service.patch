@@ -1,0 +1,415 @@
+[1mdiff --git a/packages/bundle/web-app/cordis.patch.yml b/packages/bundle/web-app/cordis.patch.yml[m
+[1mindex 61151bdc65..ce601a6090 100644[m
+[1m--- a/packages/bundle/web-app/cordis.patch.yml[m
+[1m+++ b/packages/bundle/web-app/cordis.patch.yml[m
+[36m@@ -142,6 +142,8 @@[m
+         printUrl: true[m
+         surfaceContext: true[m
+         trustedHosts: !!js ctx.webStartup.trustedHosts[m
+[32m+[m[32m        remoteService: !!js ctx.webStartup.remoteService[m
+[32m+[m[32m        publicUrl: !!js ctx.webStartup.publicUrl[m
+ [m
+     # The client-plugin reload chain, always mounted: it is idle until a[m
+     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It[m
+[36m@@ -169,6 +171,13 @@[m
+         # A deployment adding authorities keeps this expression and concatenates[m
+         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].[m
+         trustedHosts: !!js ctx.webRuntime.trustedHosts[m
+[32m+[m[32m        remoteService: !!js ctx.webRuntime.remoteService[m
+[32m+[m[32m        # Remote-access profile is controlled by DSH_REMOTE_SERVICE=1.[m
+[32m+[m[32m        # The core defaults remain local-only when the flag is absent.[m
+[32m+[m[32m        # Remote-access profile: the deployment explicitly opts into trusted[m
+[32m+[m[32m        # authorities for host/configuration/provider operations. The core[m
+[32m+[m[32m        # client-connection default remains loopback-only for other profiles.[m
+[32m+[m[32m        allowRemotePrivilegedMethods: !!js ctx.webRuntime.remoteService[m
+ [m
+     - id: api-remotes[m
+       name: '@deepseek-ai/dsh-api-remotes'[m
+[1mdiff --git a/packages/bundle/web-app/src/index.ts b/packages/bundle/web-app/src/index.ts[m
+[1mindex 6965310437..499b7d08ad 100644[m
+[1m--- a/packages/bundle/web-app/src/index.ts[m
+[1m+++ b/packages/bundle/web-app/src/index.ts[m
+[36m@@ -53,6 +53,10 @@[m [mexport interface Config {[m
+   surfaceContext: boolean[m
+   /** Explicit `--trusted-host` authorities from this invocation. */[m
+   trustedHosts: string[][m
+[32m+[m[32m  /** Shared remote-service mode; makes the trusted host a browser-facing service. */[m
+[32m+[m[32m  remoteService?: boolean[m
+[32m+[m[32m  /** Optional external browser origin used for displayed/runtime URLs. */[m
+[32m+[m[32m  publicUrl?: string[m
+ }[m
+ [m
+ export const Config: z<Config> = z.object({[m
+[36m@@ -60,6 +64,8 @@[m [mexport const Config: z<Config> = z.object({[m
+   printUrl: z.boolean().default(true),[m
+   surfaceContext: z.boolean().default(true),[m
+   trustedHosts: z.array(String).default([]),[m
+[32m+[m[32m  remoteService: z.boolean().default(false),[m
+[32m+[m[32m  publicUrl: z.string().default(''),[m
+ })[m
+ [m
+ /** Bind-dependent Web values shared by the trust fence and URL display. */[m
+[36m@@ -68,6 +74,10 @@[m [mexport interface WebRuntimeValues {[m
+   lanAddresses: string[][m
+   /** LAN literals followed by explicit invocation authorities. */[m
+   trustedHosts: string[][m
+[32m+[m[32m  /** Whether this is a shared remote browser service. */[m
+[32m+[m[32m  remoteService?: boolean[m
+[32m+[m[32m  /** Optional external browser origin. */[m
+[32m+[m[32m  publicUrl?: string[m
+ }[m
+ [m
+ /** Environment variable naming the canonical local URL of this Web GUI. */[m
+[36m@@ -129,13 +139,18 @@[m [mtry {[m
+  * @param extra - explicit `--trusted-host` values, in argument order.[m
+  * @returns the LAN display addresses and invocation-derived fence authorities.[m
+  */[m
+[31m-export function resolveLanTrust(bindHost: string, extra: readonly string[]): WebRuntimeValues {[m
+[32m+[m[32mexport function resolveLanTrust(bindHost: string, extra: readonly string[], remoteService = false, publicUrl?: string): WebRuntimeValues {[m
+   const lanAddresses = bindHost === ALL_INTERFACES_HOST[m
+     ? Object.values(networkInterfaces()).flat()[m
+       .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)[m
+       .map(iface => iface.address)[m
+     : [][m
+[31m-  return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }[m
+[32m+[m[32m  return {[m
+[32m+[m[32m    lanAddresses,[m
+[32m+[m[32m    trustedHosts: [...lanAddresses, ...extra],[m
+[32m+[m[32m    ...remoteService ? { remoteService: true } : {},[m
+[32m+[m[32m    ...publicUrl === undefined || publicUrl === '' ? {} : { publicUrl },[m
+[32m+[m[32m  }[m
+ }[m
+ [m
+ /** Model-visible orientation and acceptance boundary for sessions created through `dsh web`. */[m
+[36m@@ -152,8 +167,10 @@[m [mfunction webSurfacePrompt(webUrl: string): string {[m
+     + 'Do not start a replacement server unless the user asks; if one is needed, use a managed background job and verify its exact URL.'[m
+ }[m
+ [m
+[31m-/** Resolve the canonical loopback URL from the active Web server. */[m
+[32m+[m[32m/** Resolve the browser-facing URL from the configured public origin or active Web server. */[m
+ function localWebUrl(ctx: Context): string {[m
+[32m+[m[32m  const runtime = ctx.get(WEB_RUNTIME_SERVICE) as WebRuntimeValues | undefined[m
+[32m+[m[32m  if (runtime?.publicUrl !== undefined && runtime.publicUrl !== '') return runtime.publicUrl[m
+   const port = ctx.get('webServer')?.port[m
+   if (port === undefined) throw new Error('web-app: webServer service missing while resolving Web runtime')[m
+   return `http://${LOOPBACK_HOST}:${String(port)}`[m
+[36m@@ -224,12 +241,17 @@[m [mexport const internals: {[m
+  * @param config - validated {@link Config}.[m
+  */[m
+ export function apply(ctx: Context, config: Config): void {[m
+[31m-  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)[m
+[32m+[m[32m  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts, config.remoteService, config.publicUrl)[m
+   // The loopback URL belongs to this host. Under SSH, the operator reaches it[m
+   // through a local forwarding address that this process cannot derive.[m
+   const handoffBrowser = config.openBrowser && !launchedThroughSsh(ctx)[m
+   // Release dependent rows only after bind-dependent trust has been sampled once.[m
+   ctx.provide(WEB_RUNTIME_SERVICE, runtime)[m
+[32m+[m[32m  if (runtime.remoteService) {[m
+[32m+[m[32m    ctx.on('webserver/index-inject', (table) => {[m
+[32m+[m[32m      table.push({ kind: 'global', name: '__DSH_REMOTE_SERVICE__', value: true })[m
+[32m+[m[32m    })[m
+[32m+[m[32m  }[m
+   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })[m
+   if (config.surfaceContext) {[m
+     ctx.inject(['systemPrompt'], (promptCtx) => {[m
+[36m@@ -244,7 +266,7 @@[m [mexport function apply(ctx: Context, config: Config): void {[m
+       runtimeCtx.shellEnv.register({[m
+         name: 'web-runtime',[m
+         variables: {[m
+[31m-          [DSH_WEB_URL]: { description: 'Canonical local URL of the DeepSeek Harness Web GUI serving this session.' },[m
+[32m+[m[32m          [DSH_WEB_URL]: { description: 'Canonical browser URL of the DeepSeek Harness Web GUI serving this session.' },[m
+         },[m
+         resolve: () => ({ [DSH_WEB_URL]: localWebUrl(runtimeCtx) }),[m
+       })[m
+[1mdiff --git a/packages/bundle/web-app/src/startup.ts b/packages/bundle/web-app/src/startup.ts[m
+[1mindex 9faad244dd..420ad60561 100644[m
+[1m--- a/packages/bundle/web-app/src/startup.ts[m
+[1m+++ b/packages/bundle/web-app/src/startup.ts[m
+[36m@@ -1,6 +1,6 @@[m
+ /**[m
+  * The web app's command-line provider: it parses the `dsh --profile web` flag[m
+[31m- * family (`--host`, `--port`, `--trusted-host`, `--no-open`) and its `--help`[m
+[32m+[m[32m * family (`--host`, `--port`, `--trusted-host`, `--public-url`, `--no-open`) and its `--help`[m
+  * text, then provides the immutable values as {@link WEB_STARTUP_SERVICE}.[m
+  * Ordinary rows inject that service before reading it from lazy config.[m
+  * @module @deepseek-ai/dsh-web-app/startup[m
+[36m@@ -29,6 +29,10 @@[m [mexport interface WebStartupValues {[m
+   port?: number[m
+   /** Explicit `--trusted-host` authorities, in argument order. */[m
+   trustedHosts: string[][m
+[32m+[m[32m  /** Shared remote-service mode, enabled by DSH_REMOTE_SERVICE=1. */[m
+[32m+[m[32m  remoteService?: boolean[m
+[32m+[m[32m  /** External browser origin used for displayed/runtime URLs. */[m
+[32m+[m[32m  publicUrl?: string[m
+ }[m
+ [m
+ /** The web flag family, as commander parsed it. */[m
+[36m@@ -37,6 +41,7 @@[m [minterface WebOptions {[m
+   open: boolean[m
+   port?: string[m
+   trustedHost?: string[][m
+[32m+[m[32m  publicUrl?: string[m
+ }[m
+ [m
+ /**[m
+[36m@@ -52,6 +57,7 @@[m [mfunction webCommand(): Command {[m
+     .option('--no-open', 'do not open the Web UI in the default browser')[m
+     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')[m
+     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')[m
+[32m+[m[32m    .option('--public-url <url>', 'external browser origin for shared remote service mode')[m
+     .addHelpText('after', `[m
+ Examples:[m
+   dsh --profile web                          serve on the composed host and port[m
+[36m@@ -62,8 +68,9 @@[m [mExamples:[m
+ [m
+ /**[m
+  * Parse and provide the Web invocation as an ordinary Cordis service. The[m
+[31m- * command's action publishes the flags this invocation named; `--host 0.0.0.0`[m
+[31m- * or a non-numeric `--port` is a usage error, so on rejection (and on `--help`)[m
+[32m+[m[32m * command's action publishes the flags this invocation named. All-interface[m
+[32m+[m[32m * binding requires DSH_REMOTE_SERVICE=1; public URL and port are validated[m
+[32m+[m[32m * before publishing the service, so on rejection (and on `--help`)[m
+  * nothing is provided.[m
+  * @param ctx - plugin context carrying the command line.[m
+  */[m
+[36m@@ -71,8 +78,17 @@[m [mexport function apply(ctx: Context): void {[m
+   const program = webCommand()[m
+   program.action(() => {[m
+     const options = program.opts<WebOptions>()[m
+[31m-    if (options.host === '0.0.0.0') {[m
+[31m-      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')[m
+[32m+[m[32m    const remoteService = process.env.DSH_REMOTE_SERVICE === '1'[m
+[32m+[m[32m    if (options.host === '0.0.0.0' && !remoteService) {[m
+[32m+[m[32m      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead (or set DSH_REMOTE_SERVICE=1 for shared remote mode)')[m
+[32m+[m[32m    }[m
+[32m+[m[32m    if (options.publicUrl !== undefined) {[m
+[32m+[m[32m      try {[m
+[32m+[m[32m        const url = new URL(options.publicUrl)[m
+[32m+[m[32m        if (url.pathname !== '/' && url.pathname !== '' || url.search !== '' || url.hash !== '') throw new Error('public URL must be an origin')[m
+[32m+[m[32m      } catch {[m
+[32m+[m[32m        program.error(`error: --public-url must be an absolute origin, got ${JSON.stringify(options.publicUrl)}`)[m
+[32m+[m[32m      }[m
+     }[m
+     if (options.port !== undefined && !/^\d+$/.test(options.port)) {[m
+       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)[m
+[36m@@ -82,6 +98,8 @@[m [mexport function apply(ctx: Context): void {[m
+       ...options.host !== undefined && { host: options.host },[m
+       ...options.port !== undefined && { port: Number(options.port) },[m
+       trustedHosts: options.trustedHost ?? [],[m
+[32m+[m[32m      ...remoteService && { remoteService: true },[m
+[32m+[m[32m      ...options.publicUrl !== undefined && { publicUrl: options.publicUrl },[m
+     } satisfies WebStartupValues)[m
+   })[m
+   parseCmdline(ctx, program)[m
+[1mdiff --git a/packages/client/connection/README.md b/packages/client/connection/README.md[m
+[1mindex 71ef204a58..8d58235e9d 100644[m
+[1m--- a/packages/client/connection/README.md[m
+[1m+++ b/packages/client/connection/README.md[m
+[36m@@ -2,11 +2,11 @@[m
+ [m
+ English | [中文](README.zh.md)[m
+ [m
+[31m-Wire consumer layer: the client plugin's apply mounts `ctx.connection` (shared api client + current-page loopback state + observable generation-scoped `hostDescription` + single-consumer stream-loop starter); the export face carries the wire contract types, the `AbstractApiClient` abstraction, and the loop's sink/config types. Each successful readiness handshake publishes the exact `host.describe` value before `onConnected`; generation loss and explicit stop clear it, so native-capability consumers never retain a disconnected answer. The browser carrier uses HTTP POST for unary and respond operations and opens one downlink-only WebSocket each for `events.mux` and `events.host`; the in-process carrier satisfies the same two-stream abstraction. The exported `ClientTransportHooks` names the page global `__DSH_TRANSPORT__` that replaces the browser carrier wholesale: the served web app leaves it unset and gets HTTP + WebSocket, while a shell owning a different physical transport (the worker preview's postMessage tunnel) provides `createApiClient` and `fetch` — plus `loadBundle` when it also owns bundle bytes — instead of forking the plugin. The Host half owns the single `/api` route and its Fetch bridge; a registered Typert interceptor claims its Remote endpoints before the API Proxy fallback. Loopback hostname classification stays package-internal: the `/api` Host fence and WebSocket upgrades use it directly, while other client plugins consume the derived `ctx.connection.isLoopback` state. The node half's `/api` route pins the privileged method set (`host.pickDirectory`, `host.openPath`, and the whole configuration plane — `settings.describe`/`openDocument`/`update`/`replace`/`mutate` and `credentials.describe`/`set`/`unset`; reads and native actions included, since describing returns the exposed configuration, opening acts on the Host desktop, and probing an arbitrary reference reports where a credential comes from — and the agent-preset authoring plane, `agentPreset.read`/`copy`/`openDocument`/`remove`, since a composition names the plugins a session runs, so reading one is reconnaissance, and copy/remove/openDocument manage the roster and drive the host desktop (authoring is copy-only, so none of them accepts composition text or a path); `agentPreset.list` and `agentPreset.select` stay out — the roster carries only ids and trust, and choosing a preset grants nothing `session.create`'s own `agentPreset` did not, over a default that already carries bash) to loopback by passing the trust fence with an empty trust list — a declared `trustedHosts` authority reaches every other method, while these stay loopback-local until a real authentication layer exists. The platform carriers and ConnectionController loop are package-internal; apply selects and drives them. The downlink boundary is documented in the [WebSocket downlink carrier Agent Note](../../../.agents/notes/implemented/architecture/2026-08-04-websocket-downlink-carrier.md).[m
+[32m+[m[32mWire consumer layer: the client plugin's apply mounts `ctx.connection` (shared api client + current-page loopback state + observable generation-scoped `hostDescription` + single-consumer stream-loop starter); the export face carries the wire contract types, the `AbstractApiClient` abstraction, and the loop's sink/config types. Each successful readiness handshake publishes the exact `host.describe` value before `onConnected`; generation loss and explicit stop clear it, so native-capability consumers never retain a disconnected answer. The browser carrier uses HTTP POST for unary and respond operations and opens one downlink-only WebSocket each for `events.mux` and `events.host`; the in-process carrier satisfies the same two-stream abstraction. The exported `ClientTransportHooks` names the page global `__DSH_TRANSPORT__` that replaces the browser carrier wholesale: the served web app leaves it unset and gets HTTP + WebSocket, while a shell owning a different physical transport (the worker preview's postMessage tunnel) provides `createApiClient` and `fetch` — plus `loadBundle` when it also owns bundle bytes — instead of forking the plugin. The Host half owns the single `/api` route and its Fetch bridge; a registered Typert interceptor claims its Remote endpoints before the API Proxy fallback. Loopback hostname classification stays package-internal: the `/api` Host fence and WebSocket upgrades use it directly, while other client plugins consume the derived `ctx.connection.isLoopback` state. When the web profile runs with `DSH_REMOTE_SERVICE=1`, the browser bootstrap marks the trusted shared service and `ctx.connection.isLoopback` is deliberately true for client capability decisions; this keeps settings, provider configuration, host actions, and other consumers on one host-backed path instead of adding remote exceptions in each feature. The node half's `/api` route pins the privileged method set (`host.pickDirectory`, `host.openPath`, and the whole configuration plane — `settings.describe`/`openDocument`/`update`/`replace`/`mutate` and `credentials.describe`/`set`/`unset`; reads and native actions included, since describing returns the exposed configuration, opening acts on the Host desktop, and probing an arbitrary reference reports where a credential comes from — and the agent-preset authoring plane, `agentPreset.read`/`copy`/`openDocument`/`remove`, since a composition names the plugins a session runs, so reading one is reconnaissance, and copy/remove/openDocument manage the roster and drive the host desktop (authoring is copy-only, so none of them accepts composition text or a path); `agentPreset.list` and `agentPreset.select` stay out — the roster carries only ids and trust, and choosing a preset grants nothing `session.create`'s own `agentPreset` did not, over a default that already carries bash) to loopback by passing the trust fence with an empty trust list in ordinary profiles. In shared remote-service mode, the same declared `trustedHosts` authority is intentionally passed for the complete host/configuration plane; this is an explicit deployment decision and still is not an authentication layer. The platform carriers and ConnectionController loop are package-internal; apply selects and drives them. The downlink boundary is documented in the [WebSocket downlink carrier Agent Note](../../../.agents/notes/implemented/architecture/2026-08-04-websocket-downlink-carrier.md).[m
+ [m
+ ## /api browser-trust fence[m
+ [m
+[31m-The node half guards every entry under `/api` before bridging or upgrading (`src/api-request-trust.ts`). Every request — browser-marked or not — must present a `Host` that is a loopback authority or matches a `trustedHosts` entry: exact on `host:port` entries, any port on port-less entries, both sides compared through WHATWG normalization (DNS-rebinding defense). There is deliberately no shortcut for unmarked HTTP requests: over plain HTTP a browser attaches neither `Origin` nor Fetch-Metadata to image and navigation reads, so an unmarked request may still be a rebound browser read with a readable response, and Host is the one header rebinding cannot forge; a browser WebSocket handshake carries `Origin` and passes the same comparison. Non-browser clients pass the same fence via loopback, deployment-derived LAN IP literals, or a declared authority. When markers are present, an attached `Origin` must equal the Host authority, and an explicit `sec-fetch-site: cross-site` marker is refused. A `trustedHosts` entry that is not a bare, canonical `host[:port]` authority — one WHATWG parsing reads back exactly as written — fails the plugin load loudly: parsing would otherwise quietly authorize the hostname inside `harness.internal/path`, or broaden a dangling-colon or zero-padded port to an any-port grant. HTTP failures answer plain 403 before any RPC dispatch; upgrade failures reject the handshake before any event stream starts. Non-loopback compositions must trust their serving authorities explicitly: the Web runtime derives LAN IP literals from an all-interfaces server config, while `trustedHosts` in cordis.yml and the CLI's `--trusted-host` flag declare named authorities. `dsh web --host 0.0.0.0` is intentionally unsupported until remote access has an authentication layer. The fence is a reachability policy, not authentication; the Web carrier provides no authentication layer. Decision record: [the api browser-trust boundary Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md).[m
+[32m+[m[32mThe node half guards every entry under `/api` before bridging or upgrading (`src/api-request-trust.ts`). Every request — browser-marked or not — must present a `Host` that is a loopback authority or matches a `trustedHosts` entry: exact on `host:port` entries, any port on port-less entries, both sides compared through WHATWG normalization (DNS-rebinding defense). There is deliberately no shortcut for unmarked HTTP requests: over plain HTTP a browser attaches neither `Origin` nor Fetch-Metadata to image and navigation reads, so an unmarked request may still be a rebound browser read with a readable response, and Host is the one header rebinding cannot forge; a browser WebSocket handshake carries `Origin` and passes the same comparison. Non-browser clients pass the same fence via loopback, deployment-derived LAN IP literals, or a declared authority. When markers are present, an attached `Origin` must equal the Host authority, and an explicit `sec-fetch-site: cross-site` marker is refused. A `trustedHosts` entry that is not a bare, canonical `host[:port]` authority — one WHATWG parsing reads back exactly as written — fails the plugin load loudly: parsing would otherwise quietly authorize the hostname inside `harness.internal/path`, or broaden a dangling-colon or zero-padded port to an any-port grant. HTTP failures answer plain 403 before any RPC dispatch; upgrade failures reject the handshake before any event stream starts. Shared remote mode does not replace this fence: it enables the same trusted authority for the host-backed configuration plane, while the public browser origin is supplied by `--public-url` and the browser continues using the current page origin for HTTP and WSS. Non-loopback compositions must trust their serving authorities explicitly: the Web runtime derives LAN IP literals from an all-interfaces server config, while `trustedHosts` in cordis.yml and the CLI's `--trusted-host` flag declare named authorities. `dsh web --host 0.0.0.0` is accepted only with `DSH_REMOTE_SERVICE=1`; the shared launcher and deployment are responsible for placing authentication in front of the service. The fence is a reachability policy, not authentication; the Web carrier itself provides no authentication layer. Decision record: [the api browser-trust boundary Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md).[m
+ [m
+ ## `/api` WebSocket downlinks[m
+ [m
+[1mdiff --git a/packages/client/connection/src/activity-log.ts b/packages/client/connection/src/activity-log.ts[m
+[1mnew file mode 100644[m
+[1mindex 0000000000..e75f17a21e[m
+[1m--- /dev/null[m
+[1m+++ b/packages/client/connection/src/activity-log.ts[m
+[36m@@ -0,0 +1,20 @@[m
+[32m+[m[32mimport { appendFile } from 'node:fs/promises'[m
+[32m+[m
+[32m+[m[32mexport interface ActivityRecord {[m
+[32m+[m[32m  ts: string[m
+[32m+[m[32m  kind: 'http' | 'websocket'[m
+[32m+[m[32m  method?: string[m
+[32m+[m[32m  route: string[m
+[32m+[m[32m  status?: number[m
+[32m+[m[32m  durationMs?: number[m
+[32m+[m[32m  accepted?: boolean[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/** Best-effort NDJSON logger; it never captures request or response payloads. */[m
+[32m+[m[32mexport function createActivityLogger(path = process.env.DSH_ACTIVITY_LOG): (record: Omit<ActivityRecord, 'ts'>) => void {[m
+[32m+[m[32m  if (path === undefined || path === '') return () => {}[m
+[32m+[m[32m  return (record) => {[m
+[32m+[m[32m    const line = JSON.stringify({ ts: new Date().toISOString(), ...record }) + '\n'[m
+[32m+[m[32m    void appendFile(path, line, { encoding: 'utf8' }).catch(() => {})[m
+[32m+[m[32m  }[m
+[32m+[m[32m}[m
+[1mdiff --git a/packages/client/connection/src/client/index.ts b/packages/client/connection/src/client/index.ts[m
+[1mindex dce8d030bf..24bca1fe7a 100644[m
+[1m--- a/packages/client/connection/src/client/index.ts[m
+[1m+++ b/packages/client/connection/src/client/index.ts[m
+[36m@@ -75,6 +75,8 @@[m [mexport interface ClientTransportHooks {[m
+ /** Page global carrying {@link ClientTransportHooks}; absent in the served web app. */[m
+ interface ClientTransportGlobal {[m
+   __DSH_TRANSPORT__?: ClientTransportHooks[m
+[32m+[m[32m  /** Shared remote-service mode injected by the web runtime. */[m
+[32m+[m[32m  __DSH_REMOTE_SERVICE__?: boolean[m
+ }[m
+ [m
+ /**[m
+[36m@@ -110,7 +112,9 @@[m [mexport function apply(ctx: Context): void {[m
+   const pageLocation = typeof location === 'undefined' ? undefined : location[m
+   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')[m
+   const fixtureClient = fixture ? new FixtureApiClient() : undefined[m
+[31m-  const transport = (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__[m
+[32m+[m[32m  const globals = globalThis as ClientTransportGlobal[m
+[32m+[m[32m  const transport = globals.__DSH_TRANSPORT__[m
+[32m+[m[32m  const remoteService = globals.__DSH_REMOTE_SERVICE__ === true[m
+   const api: IApiClient = fixtureClient ?? transport?.createApiClient() ?? new WebApiClient()[m
+   const rpc = fixtureClient?.rpc ?? createWebConnectionRpc(transport?.fetch)[m
+   let started = false[m
+[36m@@ -129,7 +133,11 @@[m [mexport function apply(ctx: Context): void {[m
+   }[m
+   const handle: ConnectionHandle = {[m
+     api,[m
+[31m-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),[m
+[32m+[m[32m    // Remote-service mode deliberately presents one trusted shared host as the[m
+[32m+[m[32m    // local service boundary to all client consumers (settings, file actions,[m
+[32m+[m[32m    // provider configuration, and capability UI), instead of scattering remote[m
+[32m+[m[32m    // exceptions through each feature package.[m
+[32m+[m[32m    isLoopback: remoteService || pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),[m
+     hostDescription: {[m
+       getSnapshot: () => description,[m
+       subscribe: (listener) => {[m
+[1mdiff --git a/packages/client/connection/src/index.ts b/packages/client/connection/src/index.ts[m
+[1mindex a1764a3d58..001875580a 100644[m
+[1m--- a/packages/client/connection/src/index.ts[m
+[1m+++ b/packages/client/connection/src/index.ts[m
+[36m@@ -10,6 +10,7 @@[m [mimport { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'[m
+ import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'[m
+ import { HostConnectionService } from './rpc-host.ts'[m
+ import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'[m
+[32m+[m[32mimport { createActivityLogger } from './activity-log.ts'[m
+ [m
+ export type {[m
+   ConnectionRpcAuthority,[m
+[36m@@ -57,12 +58,18 @@[m [mexport interface ConnectionConfig {[m
+    * that is not a bare, canonical authority fails the plugin load.[m
+    */[m
+   trustedHosts?: string[][m
+[32m+[m[32m  /** Shared remote-service mode: trusted browser calls use the same host APIs as local pages. */[m
+[32m+[m[32m  remoteService?: boolean[m
+[32m+[m[32m  /** Low-level override for alternate compositions and tests. */[m
+[32m+[m[32m  allowRemotePrivilegedMethods?: boolean[m
+   /** Maximum buffered JSON body for every `/api` request. Default: 300 MiB. */[m
+   maxRequestBodyBytes?: number[m
+ }[m
+ [m
+ export const Config: z<ConnectionConfig> = z.object({[m
+   trustedHosts: z.array(String).default([]),[m
+[32m+[m[32m  remoteService: z.boolean().default(false),[m
+[32m+[m[32m  allowRemotePrivilegedMethods: z.boolean().default(false),[m
+   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),[m
+ })[m
+ [m
+[36m@@ -122,15 +129,19 @@[m [mconst PRIVILEGED_METHODS = new Set([[m
+  * Mounts the API gateway under the browser transport prefix. Every request on[m
+  * the prefix passes the browser-trust fence first (DNS-rebinding and[m
+  * cross-site defense — [api-request-trust](./api-request-trust.ts));[m
+[31m- * privileged methods additionally pass it with an empty trust list, which[m
+[31m- * pins them to loopback.[m
+[32m+[m[32m * privileged methods additionally pass it with an empty trust list by default,[m
+[32m+[m[32m * which pins them to loopback; deployments may explicitly opt into trusted[m
+[32m+[m[32m * authorities with allowRemotePrivilegedMethods.[m
+  * @param ctx - Host plugin context.[m
+  * @param config - resolved plugin config (schema defaults applied).[m
+  */[m
+ export function apply(ctx: Context, config?: ConnectionConfig): void {[m
+   // The Loader resolves schema defaults; hand-built test contexts may pass none.[m
+   const trustedHosts = config?.trustedHosts ?? [][m
+[32m+[m[32m  const remoteService = config?.remoteService ?? false[m
+[32m+[m[32m  const allowRemotePrivilegedMethods = config?.allowRemotePrivilegedMethods ?? remoteService[m
+   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES[m
+[32m+[m[32m  const activity = createActivityLogger()[m
+   // Config boundary: a malformed entry fails the load loudly here rather than[m
+   // silently authorizing its hostname prefix at request time.[m
+   for (const entry of trustedHosts) assertTrustedAuthority(entry)[m
+[36m@@ -144,7 +155,7 @@[m [mexport function apply(ctx: Context, config?: ConnectionConfig): void {[m
+         : undefined[m
+       if (method !== undefined[m
+         && PRIVILEGED_METHODS.has(method)[m
+[31m-        && !isTrustedApiRequest(request, [])) {[m
+[32m+[m[32m        && !isTrustedApiRequest(request, (remoteService || allowRemotePrivilegedMethods) ? trustedHosts : [])) {[m
+         return new Response('forbidden', { status: 403 })[m
+       }[m
+       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {[m
+[36m@@ -167,7 +178,10 @@[m [mexport function apply(ctx: Context, config?: ConnectionConfig): void {[m
+         res.end('forbidden')[m
+         return[m
+       }[m
+[32m+[m[32m      const startedAt = Date.now()[m
+       await bridge(req, res, fetchHandler, maxRequestBodyBytes)[m
+[32m+[m[32m      const requestPath = new URL(req.url ?? '/', 'http://x').pathname[m
+[32m+[m[32m      activity({ kind: 'http', route: requestPath, status: res.statusCode, durationMs: Date.now() - startedAt, ...req.method === undefined ? {} : { method: req.method } })[m
+     },[m
+   }[m
+   ctx.effect(() => ctx.webServer.register(route), 'client-connection: /api route')[m
+[36m@@ -182,9 +196,11 @@[m [mexport function apply(ctx: Context, config?: ConnectionConfig): void {[m
+         path,[m
+         handler: (req, socket, head) => {[m
+           if (!isTrustedApiRequest(req, trustedHosts)) {[m
+[32m+[m[32m            activity({ kind: 'websocket', route: path, accepted: false })[m
+             rejectWebSocketUpgrade(socket)[m
+             return[m
+           }[m
+[32m+[m[32m          activity({ kind: 'websocket', route: path, accepted: true })[m
+           return handle(req, socket, head)[m
+         },[m
+       }), `client-connection: ${path} WebSocket`)[m
+[1mdiff --git a/packages/client/connection/tests/node-half.host.spec.ts b/packages/client/connection/tests/node-half.host.spec.ts[m
+[1mindex 022436d558..c38b2cd33b 100644[m
+[1m--- a/packages/client/connection/tests/node-half.host.spec.ts[m
+[1m+++ b/packages/client/connection/tests/node-half.host.spec.ts[m
+[36m@@ -75,7 +75,7 @@[m [mfunction fakeResponse(): { response: ServerResponse; state: { status?: number; b[m
+   return { response, state }[m
+ }[m
+ [m
+[31m-async function mounted(config?: { trustedHosts?: string[] }): Promise<{[m
+[32m+[m[32masync function mounted(config?: { trustedHosts?: string[]; allowRemotePrivilegedMethods?: boolean }): Promise<{[m
+   routes: WebRoute[][m
+   upgrades: WebUpgradeRoute[][m
+   dispose: () => Promise<void>[m
+[36m@@ -198,6 +198,20 @@[m [mdescribe('connection node half', () => {[m
+     await dispose()[m
+   })[m
+ [m
+[32m+[m[32m  it('allows privileged methods from a declared authority when remote access is explicitly enabled', async () => {[m
+[32m+[m[32m    const { routes, dispose } = await mounted({[m
+[32m+[m[32m      trustedHosts: ['harness.example'],[m
+[32m+[m[32m      allowRemotePrivilegedMethods: true,[m
+[32m+[m[32m    })[m
+[32m+[m[32m    const remote = fakeResponse()[m
+[32m+[m[32m    await routes[0]!.handler([m
+[32m+[m[32m      fakeRequest({ host: 'harness.example', origin: 'http://harness.example', 'sec-fetch-site': 'same-origin' }, `${API_PATH}/settings.describe`),[m
+[32m+[m[32m      remote.response,[m
+[32m+[m[32m    )[m
+[32m+[m[32m    expect(remote.state.status).not.toBe(403)[m
+[32m+[m[32m    await dispose()[m
+[32m+[m[32m  })[m
+[32m+[m
+   it('passes loopback and declared-authority requests through to the bridge', async () => {[m
+     const { routes, dispose } = await mounted({ trustedHosts: ['harness.example:3080', '192.168.1.5'] })[m
+     // Loopback, no browser markers (curl shape): the fence passes; the carrier[m
+[1mdiff --git a/packages/client/connection/tsconfig.host.json b/packages/client/connection/tsconfig.host.json[m
+[1mindex 8e16ec834a..004fc8451e 100644[m
+[1m--- a/packages/client/connection/tsconfig.host.json[m
+[1m+++ b/packages/client/connection/tsconfig.host.json[m
+[36m@@ -8,6 +8,7 @@[m
+   "files": [[m
+     "src/api-path.ts",[m
+     "src/api-request-trust.ts",[m
+[32m+[m[32m    "src/activity-log.ts",[m
+     "src/http-bridge.ts",[m
+     "src/index.ts",[m
+     "src/invariant.ts",[m
