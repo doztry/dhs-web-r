@@ -27,3 +27,7 @@ export DSH_REMOTE_SERVICE=1
 ```
 
 `trustedHosts` is a DNS-rebinding/reachability control, not authentication. Put TLS and an authentication layer in front of any internet-facing deployment.
+
+## OpenCode models plugin
+
+The next plugin is in `plugins/opencode-models`. It provides a small API-like bridge from OpenAI-compatible clients to an OpenCode server. It supports authenticated `GET /v1/models` and non-streaming `POST /v1/chat/completions`, keeps the OpenCode endpoint and credentials server-side, rejects streaming and tool calls until their semantics are mapped correctly, and binds to loopback by default. See `plugins/opencode-models/README.md` for configuration and the security model.

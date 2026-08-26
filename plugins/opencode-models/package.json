@@ -1,0 +1,11 @@
+{
+  "name": "@deepseek-ai/dhs-opencode-models",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode model provider bridge for DHS",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node src/server.mjs"
+  }
+}
